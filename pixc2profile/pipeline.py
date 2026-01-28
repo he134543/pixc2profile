@@ -51,20 +51,18 @@ def setup_logging(log_level="INFO"):
     return logging.getLogger(__name__)
 
 
-def load_config(config_path):
-    """Load configuration from JSON file."""
-    with open(config_path, 'r') as file:
-        config = json.load(file)
+def load_config(config_dict):
+    """Process configuration dictionary."""
+    config = config_dict.copy()
     
-    # Handle 'inf' string in profile_range
+    # Handle inf and -inf strings in profile_range
     if 'profile_range' in config:
-        profile_range = []
-        for val in config['profile_range']:
-            if val == 'inf':
-                profile_range.append(float('inf'))
-            else:
-                profile_range.append(val)
-        config['profile_range'] = tuple(profile_range)
+        profile_range = config['profile_range']
+        if isinstance(profile_range, list) and len(profile_range) == 2:
+            config['profile_range'] = [
+                float('-inf') if str(profile_range[0]).lower() == 'inf' else float(profile_range[0]),
+                float('inf') if str(profile_range[1]).lower() == 'inf' else float(profile_range[1])
+            ]
     
     return config
 
@@ -177,26 +175,6 @@ def step4_build_profiles(config, river, logger):
     logger.info(f"Step 4 completed: WSE profiles saved to {output_file}")
     return profile, output_file
 
-
-def pipeline(config=None, skip_steps=None):
-    """Main pipeline function for importable use.
-    
-    Args:
-        config (str or dict): Path to JSON config file or config dictionary
-        skip_steps (list): List of steps to skip (1-4)
-        
-    Returns:
-        str: Path to output profiles CSV file
-    """
-    # Handle config parameter
-    if isinstance(config, str):
-        config = load_config(config)
-    elif config is None:
-        raise ValueError("Config must be provided as file path or dictionary")
-    
-    return run_pipeline(config, skip_steps=skip_steps)
-
-
 def run_pipeline(config, skip_steps=None):
     """Run the complete PIXC2Profile pipeline."""
     logger = setup_logging(config.get('log_level', 'INFO'))
@@ -247,6 +225,24 @@ def run_pipeline(config, skip_steps=None):
         logger.error(f"Pipeline failed with error: {str(e)}")
         raise
 
+def pipeline(config=None, skip_steps=None):
+    """Main pipeline function for importable use.
+    
+    Args:
+        config (dict): Config dictionary
+        skip_steps (list): List of steps to skip (1-4)
+        
+    Returns:
+        str: Path to output profiles CSV file
+    """
+    # Handle config parameter
+    if config is None:
+        raise ValueError("Config dictionary must be provided")
+    
+    processed_config = load_config(config)
+    return run_pipeline(processed_config, skip_steps=skip_steps)
+
+
 def main():
     """Main function for command line usage."""
     parser = argparse.ArgumentParser(description='PIXC2Profile Pipeline')
@@ -265,9 +261,10 @@ def main():
     
     args = parser.parse_args()
     
-    # Load configuration
+    # Load configuration from JSON file (for command line usage only)
     if os.path.exists(args.config):
-        config = load_config(args.config)
+        with open(args.config, 'r') as file:
+            config = json.load(file)
     else:
         return
     
@@ -281,8 +278,9 @@ def main():
     if args.end_date:
         config['end_date'] = args.end_date
     
-    # Run pipeline
-    run_pipeline(config, skip_steps=args.skip_steps)
+    # Process config and run pipeline
+    processed_config = load_config(config)
+    run_pipeline(processed_config, skip_steps=args.skip_steps)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ This package provides tools to:
 - Apply quality filtering and smoothing
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Xinchen He"
 __email__ = "xinchen134543@gmail.com"
 

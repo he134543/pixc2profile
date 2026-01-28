@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="pixc2profile",
-    version="0.1.0",
+    version="0.1.1",
     author="Xinchen He",
     author_email="xinchen134543@gmail.com",
     description="A Python package for extracting along-river water surface elevation (WSE) profiles directly from SWOT Pixel Cloud (PixC) data",
@@ -16,6 +16,7 @@ setup(
         "geopandas",
         "tqdm",
         "matplotlib",
+        "seaborn",
         "dask-geopandas",
         "statsmodels",
         "shapely",

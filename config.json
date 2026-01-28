@@ -1,39 +1,28 @@
 {
-  "home_dir": "/mnt/d/pixc2profile/examples/data",
-  "river_name": "test_river",
-  "start_date": "2024-01-01",
-  "end_date": "2024-03-01",
-  "pass_tile_list": [
-    "454_082L",
-    "454_083L",
-    "191_227L",
-    "191_227R",
-    "191_226R"
-  ],
-  "pixc_version": "SWOT_L2_HR_PIXC_2.0",
-  "login_strategy": "netrc",
-  "node_spacing": 50,
-  "channel_width": 260,
-  "pixc_water_dir_name": "pixc_water",
-  "pixc_qc_dirname": "pixc_water_qc_filtered",
-  "n_partitions": 10,
-  "classification_categories": [3, 4],
-  "prior_water_prob_threshold": 0.5,
-  "water_frac_threshold": 0.2,
-  "wse_upper_limit": 400,
-  "quality_flag_dict": {
-    "geolocation_qual": [4, 64, 68]
-  },
-  "profile_range": [0, "inf"],
-  "agg_func": "median",
-  "keep_qual_groups": [
-    "interferogram_qual",
-    "classification_qual",
-    "geolocation_qual",
-    "sig0_qual"
-  ],
-  "frac_list": [0.01, 0.05, 0.1, 0.2],
-  "it": 3,
-  "seg_location": [],
-  "log_level": "INFO"
+  {
+  "home_dir":"/mnt/d/pixc2profile/examples/data",
+  "river_name":"test_river",
+  "start_date":"2024-01-01",
+  "end_date":"2024-03-01",
+  "pass_tile_list":["454_082L","454_083L","191_227L","191_227R","191_226R"],
+  "pixc_version":"SWOT_L2_HR_PIXC_2.0",
+  "login_strategy":"netrc",
+  "node_spacing":50,
+  "channel_width":260,
+  "pixc_water_dir_name":"pixc_water",
+  "pixc_qc_dirname":"pixc_water_qc_filtered",
+  "n_partitions":10,
+  "classification_categories":[3,4],
+  "prior_water_prob_threshold":0.5,
+  "water_frac_threshold":0.2,
+  "wse_upper_limit":400,
+  "quality_flag_dict":{"geolocation_qual":[4,64,68]},
+  "profile_range":[0,"inf"],
+  "agg_func":"median",
+  "keep_qual_groups":["interferogram_qual","classification_qual","geolocation_qual","sig0_qual"],
+  "frac_list":[0.01,0.05,0.1,0.2],
+  "it":3,
+  "seg_location":[],
+  "log_level":"INFO"
+  }
 }
