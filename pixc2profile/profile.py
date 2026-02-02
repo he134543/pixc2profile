@@ -1,342 +1,399 @@
-import glob as glob
+import glob
+import os
+from typing import List, Tuple, Optional, Union
+
 import pandas as pd 
 import numpy as np
 import geopandas as gpd
-import os
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 
-# a helper function to get the median wse and other variables in a group
-def get_median_wse_with_other_vars(df_group, keep_qual_groups):
-    # if no wse values, return NaN for wse and other variables
-    if df_group['wse'].isnull().all():
-        # return NaN for wse and other variables
-        output = pd.Series({
-            'wse': np.nan,
-            'dist_km': df_group['dist_km'].iloc[0],
-        })
-        for qual in keep_qual_groups:
-            output[qual] = np.nan
-
-        return output
-
-    # get the median WSE and other variables
-    median_wse = df_group['wse'].median()
-    # find the rows where wse is closest to the median
-    df_group["wse_diff"] = (df_group['wse'] - median_wse).abs()
-    median_rows = df_group.loc[df_group['wse_diff'] == df_group['wse_diff'].min()]
-
-    if median_rows.empty:
-        # return NaN for wse and other variables
-        output = pd.Series({
-            'wse': np.nan,
-            'dist_km': df_group['dist_km'].iloc[0],
-        })
-        for qual in keep_qual_groups:
-            output[qual] = np.nan
-
-        return output
-
-    # select the first occurrence 
-    row = median_rows.iloc[0]
-    # reutrn the row with median WSE and other variables
-    output = pd.Series({
-        'wse': median_wse,
-        'dist_km': row['dist_km'],
-    })
-    for qual in keep_qual_groups:
-        output[qual] = int(row[qual])
-    return output
+from pixc2profile.helper import aggregate_wse_with_other_vars
+from pixc2profile.interpolator import Interpolator
 
 class Profile:
+    # Constants
+    DEFAULT_CRS = "EPSG:4326"
+    DATE_FORMAT_PATTERN = r"\d{8}"
+    
+    # Default parameters
+    DEFAULT_AGG_FUNCS = ['median', 'mean', 'std', 'count', "q25", "q75"]
+    DEFAULT_QUAL_GROUPS = ["interferogram_qual", "classification_qual", "geolocation_qual", "sig0_qual"]
+    DEFAULT_FRAC_LIST = [0.01, 0.05, 0.1, 0.2]
+    DEFAULT_LOWESS_ITERATIONS = 3
+
+
     def __init__(self,
                  riv_name: str,
                  home_dir: str,
                  node_path: str,
                  buffer_path: str,
-                 pixc_dir: str,
-                 pixc_water_dir: str,
-                 pixc_water_qc_filtered_dir: str,
+                 pixc_csv_paths: List[str],
                  output_path: str,
                  ) -> None:
         """
         Initialize the profile class for a specific river.
-        Arguments:
-            riv_name (str): Name of the river.
-            home_dir (str): Base directory for the river data.
-            node_shp_path (str): Path to the shapefile containing river nodes.
-            pixc_dir (str): Directory containing raw PIXC netCDF files.
-            pixc_water_dir (str): Directory containing PIXC water CSV files.
-            pixc_water_qc_filtered_dir (str): Directory containing quality-controlled PIXC water CSV files.
-            output_path (str): File path save the final output (csv).
+        
+        Args:
+            riv_name: Name of the river.
+            home_dir: Base directory for the river data.
+            node_path: Path to the shapefile containing river nodes.
+            buffer_path: Path to the shapefile containing river buffers.
+            pixc_csv_paths: List of paths to pixc observations CSV files.
+            output_path: File path to save the final output (csv).
+            
+        Raises:
+            FileNotFoundError: If required files don't exist.
         """
+        # Validate inputs
+        self._validate_initialization_inputs(
+            node_path, buffer_path, pixc_csv_paths
+        )
+        
         self.riv_name = riv_name
         self.home_dir = home_dir
         self.node_path = node_path
         self.buffer_path = buffer_path
 
-        # directories for PIXC data
-        self.pixc_dir = pixc_dir
-        self.pixc_water_dir = pixc_water_dir
-        self.pixc_water_qc_filtered_dir = pixc_water_qc_filtered_dir
+        # File paths for PIXC data
+        self.pixc_csv_paths = pixc_csv_paths
 
         # Initialize storage
-        self.aval_dates = None
-        self.node_gdf = None
-        self.node_buffer_gdf = None
+        self.aval_dates: Optional[List[str]] = None
+        self.node_gdf: Optional[gpd.GeoDataFrame] = None
+        self.node_buffer_gdf: Optional[gpd.GeoDataFrame] = None
 
         # Output profiles
         self.output_path = output_path
+        
+        # Initialize interpolator
+        self.interpolator = Interpolator()
 
-    def load_available_dates(self,) -> None:
+    def _validate_initialization_inputs(self, node_path: str, buffer_path: str, 
+                                       pixc_csv_paths: List[str]) -> None:
+        """Validate that required paths exist."""
+        # Check shapefiles exist
+        shapefiles_to_check = {
+            "Node shapefile": node_path,
+            "Buffer shapefile": buffer_path,
+        }
+        
+        for name, path in shapefiles_to_check.items():
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"{name} not found: {path}")
+        
+        # Validate file path lists
+        if not pixc_csv_paths:
+            raise ValueError("pixc_csv_paths cannot be empty")
+        
+        # Check that all files in the lists exist
+        for i, path in enumerate(pixc_csv_paths):
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"PIXC CSV file not found: {path}")
+    
+    def _extract_dates_from_files(self, file_paths: List[str]) -> List[str]:
+        """Extract dates from PIXC file names."""
+        return [os.path.basename(path).split("_")[0] for path in file_paths]
+    
+    def load_available_dates(self) -> None:
         """
-        Load available dates from the PIXC water and quality-controlled directories.
+        Load available dates from the PIXC CSV file paths.
         """
-        pixc_water_paths = glob.glob(os.path.join(self.pixc_water_dir, "*.csv"))
-        pixc_water_qc_filtered_paths = glob.glob(os.path.join(self.pixc_water_qc_filtered_dir, "*.csv"))
+        # Extract dates from file names
+        aval_dates = self._extract_dates_from_files(self.pixc_csv_paths)
+        self.aval_dates = sorted(list(set(aval_dates)))
 
-        # extract dates from file names
-
-        aval_dates_water = [os.path.basename(pixc_water_path).split("_")[0] for pixc_water_path in pixc_water_paths]
-        aval_dates_qc_filtered = [os.path.basename(pixc_water_qc_filtered_path).split("_")[0] for pixc_water_qc_filtered_path in pixc_water_qc_filtered_paths]
-
-        # check if the two lists are the same
-        if set(aval_dates_water) != set(aval_dates_qc_filtered):
-            raise ValueError("Available dates in PIXC water and quality-controlled directories do not match.")
-        self.aval_dates = sorted(list(set(aval_dates_water)))
-
-    def load_node_buffer_gdf(self,) -> tuple:
+    def load_node_buffer_gdf(self) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
         """
         Load the river nodes and buffers as GeoDataFrames.
+        
         Returns:
-            nodes_gdf (gpd.GeoDataFrame): GeoDataFrame of river nodes.
-            buffers_gdf (gpd.GeoDataFrame): GeoDataFrame of river buffers.
+            Tuple of (nodes_gdf, buffers_gdf): GeoDataFrames of river nodes and buffers.
+            
+        Raises:
+            FileNotFoundError: If shapefiles cannot be read.
+            ValueError: If required columns are missing.
         """
-        nodes_gdf = gpd.read_file(self.node_path)
-        nodes_gdf = nodes_gdf.to_crs(epsg=4326)  # convert to epsg 4326
-        node_buffer_gdf = gpd.read_file(self.buffer_path)
-        node_buffer_gdf = node_buffer_gdf.to_crs(epsg=4326) # convert to epsg 4326
-        self.node_gdf = nodes_gdf
-        self.node_buffer_gdf = node_buffer_gdf
-        return nodes_gdf, node_buffer_gdf
+        try:
+            nodes_gdf = gpd.read_file(self.node_path)
+            nodes_gdf = nodes_gdf.to_crs(crs=self.DEFAULT_CRS)
+            
+            node_buffer_gdf = gpd.read_file(self.buffer_path)
+            node_buffer_gdf = node_buffer_gdf.to_crs(crs=self.DEFAULT_CRS)
+            
+            # Validate required columns
+            required_cols = ['node_id', 'dist_km']
+            for col in required_cols:
+                if col not in node_buffer_gdf.columns:
+                    raise ValueError(f"Required column '{col}' not found in buffer shapefile")
+            
+            self.node_gdf = nodes_gdf
+            self.node_buffer_gdf = node_buffer_gdf
+            return nodes_gdf, node_buffer_gdf
+            
+        except Exception as e:
+            raise FileNotFoundError(f"Error loading shapefiles: {str(e)}")
     
-    def cal_median_wse(self,
-                          date: str,
-                          profile_range: tuple = (0, np.inf),
-                          agg_func: str = "median",
-                          keep_qual_groups: list = ["interferogram_qual", "classification_qual", "geolocation_qual", "sig0_qual"],
-                          ) -> pd.DataFrame:
+    def _create_date_to_file_mapping(self) -> dict:
         """
-        Build a pair of wse profiles for a specific date: one from raw PIXC water points and one from quality-controlled PIXC water points.
+        Create mapping from dates to file paths.
+        
+        Returns:
+            Dictionary mapping dates to file paths.
         """
-        # check if date is available
+        date_map = {}
+        for path in self.pixc_csv_paths:
+            date = os.path.basename(path).split("_")[0]
+            date_map[date] = path
+        
+        return date_map
+    
+    def _load_pixc_data_for_date(self, date: str) -> gpd.GeoDataFrame:
+        """
+        Load PIXC data for a specific date.
+        
+        Args:
+            date: Date string in format YYYYMMDD.
+            
+        Returns:
+            GeoDataFrame with PIXC data.
+        """
+        # Create date-to-file mapping
+        date_map = self._create_date_to_file_mapping()
+        
+        if date not in date_map:
+            raise FileNotFoundError(f"No PIXC file found for date: {date}")
+        
+        pixc_path = date_map[date]
+        
+        # Load and convert to GeoDataFrame
+        df = pd.read_csv(pixc_path)
+        gdf = gpd.GeoDataFrame(
+            df, 
+            geometry=gpd.points_from_xy(df.longitude, df.latitude), 
+            crs=self.DEFAULT_CRS
+        )
+        
+        return gdf
+    
+    def _ensure_dependencies_loaded(self) -> None:
+        """Ensure required data (dates and geometries) are loaded."""
         if self.aval_dates is None:
             self.load_available_dates()
-        if date not in self.aval_dates:
-            raise ValueError(f"Date {date} not available in PIXC data.")
-        # check if node_gdf is loaded
         if self.node_gdf is None or self.node_buffer_gdf is None:
             self.load_node_buffer_gdf()
-
-        # read the csv files containing water pixel points and convert to gpd dataframe
-        pixc_water_path = os.path.join(self.pixc_water_dir, f"{date}_water.csv")
-        pixc_water_qc_filtered_path = os.path.join(self.pixc_water_qc_filtered_dir, f"{date}_water_qc_filtered.csv")
-        df_water = pd.read_csv(pixc_water_path)
-        gdf_water = gpd.GeoDataFrame(df_water, geometry=gpd.points_from_xy(df_water.longitude, df_water.latitude), crs="EPSG:4326")
-        df_water_qc = pd.read_csv(pixc_water_qc_filtered_path)
-        gdf_water_qc = gpd.GeoDataFrame(df_water_qc, geometry=gpd.points_from_xy(df_water_qc.longitude, df_water_qc.latitude), crs="EPSG:4326")
-
-        # find intersected pixc points with reach node buffer
-        pixc_points_in_buffer_water = gpd.sjoin(self.node_buffer_gdf, gdf_water, predicate='intersects', how = "inner")
-        pixc_points_in_buffer_water_qc = gpd.sjoin(self.node_buffer_gdf, gdf_water_qc, predicate='intersects', how = "inner")
-
-        # aggregate wse by node
-        if agg_func == "median":
-            agg_water = pixc_points_in_buffer_water.groupby("node_id").apply(lambda x: get_median_wse_with_other_vars(x, keep_qual_groups), include_groups=False).reset_index()
-            agg_water_qc = pixc_points_in_buffer_water_qc.groupby("node_id").apply(lambda x: get_median_wse_with_other_vars(x, keep_qual_groups), include_groups=False).reset_index()
-        else:
-            keep_qual_groups = []
-            raise ValueError(f"Aggregation function {agg_func} not supported. Currently only 'median' is supported.")
+    
+    def agg_wse_per_node(self,
+                          date: str,
+                          profile_range: Tuple[float, float] = (0, np.inf),
+                          agg_func: List[str] = None,
+                          keep_qual_groups: List[str] = None,
+                          ) -> pd.DataFrame:
+        """
+        Build aggregated WSE profiles for a specific date from raw and QC PIXC water points.
         
-        # merge the two profiles
-        node_wse = pd.merge(agg_water, agg_water_qc, on=["node_id", "dist_km"], suffixes=('_raw', '_qc'))
-
-        # fill the empty nodes with NaN
-        node_wse = self.node_buffer_gdf.loc[:, ["node_id", "dist_km"]].merge(node_wse, 
-                                                                                on = ["node_id", "dist_km"], 
-                                                                                how='left').reset_index(drop = True).sort_values(by="dist_km")
-        # filter the profile based on the profile_range
-        node_wse = node_wse[(node_wse.dist_km >= profile_range[0]) & (node_wse.dist_km <= profile_range[1])]
-
-        # create a new column for the date
+        Args:
+            date: Date string in format YYYYMMDD.
+            profile_range: Tuple of (min_km, max_km) to filter the profile.
+            agg_func: List of aggregation functions to apply.
+            keep_qual_groups: List of quality groups to preserve.
+            
+        Returns:
+            DataFrame with aggregated WSE data per node.
+            
+        Raises:
+            ValueError: If date is not available.
+        """
+        # Set defaults
+        if agg_func is None:
+            agg_func = self.DEFAULT_AGG_FUNCS
+        if keep_qual_groups is None:
+            keep_qual_groups = self.DEFAULT_QUAL_GROUPS
+        
+        # Ensure dependencies are loaded
+        self._ensure_dependencies_loaded()
+        
+        # Validate date
+        if date not in self.aval_dates:
+            raise ValueError(f"Date {date} not available. Available dates: {self.aval_dates}")
+        
+        # Load PIXC data for the date
+        gdf = self._load_pixc_data_for_date(date)
+        
+        # Find intersected PIXC points with reach node buffer
+        pixc_points_in_buffer = gpd.sjoin(
+            self.node_buffer_gdf, gdf, predicate='intersects', how="inner"
+        )
+        
+        # Aggregate WSE by node
+        node_wse = pixc_points_in_buffer.groupby("node_id").apply(
+            lambda x: aggregate_wse_with_other_vars(
+                x, keep_qual_groups, include_stats=agg_func, reference_stat='median'
+            ), 
+            include_groups=False
+        ).reset_index()
+        
+        # Fill empty nodes with NaN
+        node_wse = self.node_buffer_gdf.loc[:, ["node_id", "dist_km"]].merge(
+            node_wse, on=["node_id", "dist_km"], how='left'
+        ).reset_index(drop=True).sort_values(by="dist_km")
+        
+        # Filter the profile based on the profile_range
+        node_wse = node_wse[
+            (node_wse.dist_km >= profile_range[0]) & (node_wse.dist_km <= profile_range[1])
+        ]
+        
+        # Add date column
         node_wse["date"] = date
-
+        
         return node_wse
     
     def smooth_wse_profile(
-                        self,
-                        node_wse, 
-                        var_name = "wse_raw",
-                        frac_list = [0.01, 0.05, 0.1, 0.2],
-                        it = 3, 
-                        seg_location = [],
-                        ):
+        self,
+        node_wse: pd.DataFrame,
+        var_name: str, 
+        method: str = 'lowess',
+        seg_locations: List[float] = None,
+        **method_params
+    ) -> pd.DataFrame:
         """
-        Smooth the WSE profile using LOWESS smoothing.
-        Arguments:
-            node_wse (pd.DataFrame): DataFrame containing the WSE profile with columns 'dist_km' and 'wse'.
-            frac_list (list, optional): List of fractions for LOWESS smoothing. Defaults to [0.01, 0.05, 0.1, 0.2].
-            it (int, optional): Number of robustifying iterations for LOWESS. Defaults to 3.
-            seg_location (list, optional): List of segment locations (in km) to apply piecewise smoothing. 
-                                           If empty, applies smoothing to the entire profile. Defaults to [].
+        Smooth the WSE profile using various interpolation methods.
+        
+        Args:
+            node_wse: DataFrame containing the WSE profile with columns 'dist_km' and WSE values.
+            var_name: Name of the variable to smooth.
+            method: Interpolation method ('lowess', 'gaussian_process').
+            seg_locations: List of segment locations (in km) to apply piecewise smoothing.
+            **method_params: Method-specific parameters (e.g., frac_list for LOWESS, length_scale for GP).
+            
+        Returns:
+            DataFrame with additional smoothed columns.
+            
+        Raises:
+            ValueError: If required columns are missing or method is not supported.
         """
-        # if seg_location is not None, we need to segment the WSE profile
-        if len(seg_location) == 0:
-            node_wse_list = [node_wse]
-        else:
-            # segment the WSE profile based on the seg_location
-            node_wse_list = []
-            for i in range(len(seg_location) + 1):
-                if i == 0:
-                    # first segment from the start to the first seg_location
-                    segment = node_wse[node_wse.dist_km <= seg_location[i]]
-                elif i == len(seg_location):
-                    # last segment from the last seg_location to the end
-                    segment = node_wse[node_wse.dist_km > seg_location[i-1]]
-                else:
-                    # middle segments between two seg_locations
-                    segment = node_wse[(node_wse.dist_km > seg_location[i-1]) & (node_wse.dist_km <= seg_location[i])]
-                node_wse_list.append(segment)
-
-        # loop each segemented node_Wse
-        for i in range(len(node_wse_list)):
-            # load this segement
-            df = node_wse_list[i]
-            # using statsmodels to apply LOWESS to smooth the WSE
-            lowess = sm.nonparametric.lowess
-            for frac in frac_list:
-                # apply LOWESS smoothing for each fraction in the list
-                # using the dist_km as exogenous variable and wse as endogenous variable
-                # it is important to use the dist_km as exogenous variable to avoid overfitting
-                endog = df.dropna(subset=[var_name])[var_name].values.ravel()
-                exog = df.dropna(subset=[var_name]).dist_km.values.ravel()
-                xval = df.dist_km.values.ravel()
-
-                df.loc[:, [f"wse_smooth_lowess_{frac}"]] = lowess(exog = exog, 
-                                                    endog = endog, 
-                                                    frac=frac, 
-                                                    it=it,
-                                                    xvals = xval
-                                                    )
-
-            # update the node_wse_list with the smoothed df
-            node_wse_list[i] = df
-        # concatenate all the smoothed segments into one dataframe
-        node_wse = pd.concat(node_wse_list, ignore_index=True).sort_values(by="dist_km")
-
-        return node_wse
-    
-    def build_wse_profile(self,
-                          date: str,
-                          profile_range: tuple = (0, np.inf),
-                          agg_func: str = "median",
-                          keep_qual_groups: list = ["interferogram_qual", "classification_qual", "geolocation_qual", "sig0_qual"],
-                          frac_list = [0.01, 0.05, 0.1, 0.2],
-                          it = 3,
-                          seg_location = [],
-                          ):
-        """
-        Build the WSE profile for a given date with smoothing.
-        |date | dist_km | wse_raw | wse_qc | wse_smooth_lowess_0.01_raw | wse_smooth_lowess_0.01_qc | ...
-        """
-        # calculate the median WSE profile
-        node_wse = self.cal_median_wse(date = date,
-                                       profile_range = profile_range,
-                                       agg_func = agg_func,
-                                       keep_qual_groups = keep_qual_groups,
-                                       )
-        # smooth the WSE profile
-        node_wse = self.smooth_wse_profile(node_wse = node_wse,
-                                          frac_list = frac_list,
-                                          it = it,
-                                          seg_location = seg_location,
-                                          )
-        return node_wse
+        # Set defaults for seg_locations
+        if seg_locations is None:
+            seg_locations = []
+        
+        # Set default parameters based on method
+        if method == 'lowess' and 'frac_list' not in method_params:
+            method_params['frac_list'] = self.DEFAULT_FRAC_LIST
+        if method == 'lowess' and 'it' not in method_params:
+            method_params['it'] = self.DEFAULT_LOWESS_ITERATIONS
+        
+        # Use the interpolator to smooth the profile
+        try:
+            result = self.interpolator.interpolate(
+                data=node_wse,
+                x_col='dist_km',
+                y_col=var_name,
+                method=method,
+                seg_locations=seg_locations,
+                **method_params
+            )
+            return result
+        except Exception as e:
+            print(f"Warning: {method} smoothing failed for {var_name}: {e}")
+            return node_wse
     
     def build_wse_profiles_over_time(self,
-                                    profile_range: tuple = (0, np.inf),
-                                    agg_func: str = "median",
-                                    keep_qual_groups: list = ["interferogram_qual", "classification_qual", "geolocation_qual", "sig0_qual"],
-                                    frac_list = [0.01, 0.05, 0.1, 0.2],
-                                    it = 3,
-                                    seg_location = [],
+                                    profile_range: Tuple[float, float] = (0, np.inf),
+                                    agg_func: List[str] = None,
+                                    smooth_target: str = "wse_median",
+                                    keep_qual_groups: List[str] = None,
+                                    interpolation_method: str = 'lowess',
+                                    seg_locations: List[float] = None,
+                                    save_output: bool = True,
+                                    **interpolation_params
                                     ) -> pd.DataFrame:
         """
         Build WSE profiles over all available dates.
+        
+        Args:
+            profile_range: Tuple of (min_km, max_km) to filter the profile.
+            agg_func: List of aggregation functions to apply.
+            smooth_target: Target variable to smooth (e.g., 'wse_median').
+            keep_qual_groups: List of quality groups to preserve.
+            interpolation_method: Interpolation method ('lowess', 'gaussian_process', 'moving_average', 'polynomial').
+            seg_locations: List of segment locations (in km) for piecewise smoothing.
+            save_output: Whether to save the output to CSV file.
+            **interpolation_params: Method-specific parameters for interpolation.
+            
         Returns:
-            pd.DataFrame: DataFrame containing WSE profiles over time.
+            DataFrame containing WSE profiles over time.
+            
+        Raises:
+            ValueError: If no dates are available.
         """
-        # check if available dates are loaded
+        # Check if available dates are loaded
         if self.aval_dates is None:
             self.load_available_dates()
         
-        # loop over all available dates to build WSE profiles
+        if not self.aval_dates:
+            raise ValueError("No available dates found. Check PIXC data directories.")
+        
+        print(f"Building WSE profiles for {len(self.aval_dates)} dates: {self.aval_dates}")
+        
+        # Loop over all available dates to build WSE profiles
         profile_list = []
-        for date in self.aval_dates:
-            node_wse = self.build_wse_profile(date = date,
-                                             profile_range = profile_range,
-                                             agg_func = agg_func,
-                                             keep_qual_groups = keep_qual_groups,
-                                             frac_list = frac_list,
-                                             it = it,
-                                             seg_location = seg_location,
-                                             )
-            profile_list.append(node_wse)
+        failed_dates = []
         
-        # concatenate all profiles into one dataframe
+
+        for i, date in enumerate(self.aval_dates):
+            try:
+                print(f"Processing date {i+1}/{len(self.aval_dates)}: {date}")
+                
+                # Calculate the WSE profile for this date
+                node_wse = self.agg_wse_per_node(
+                    date=date,
+                    profile_range=profile_range,
+                    agg_func=agg_func,
+                    keep_qual_groups=keep_qual_groups,
+                )
+                
+                # Smooth the WSE profile
+                node_wse = self.smooth_wse_profile(
+                    node_wse=node_wse,
+                    var_name=smooth_target,
+                    method=interpolation_method,
+                    seg_locations=seg_locations,
+                    **interpolation_params
+                )
+                
+                profile_list.append(node_wse)
+                
+            except Exception as e:
+                print(f"Warning: Failed to process date {date}: {e}")
+                failed_dates.append(date)
+                continue
+        
+        if not profile_list:
+            raise ValueError("Failed to process any dates successfully")
+        
+        if failed_dates:
+            print(f"Warning: Failed to process {len(failed_dates)} dates: {failed_dates}")
+        
+        # Concatenate all profiles into one dataframe
         all_profiles = pd.concat(profile_list, ignore_index=True).sort_values(by=["date", "dist_km"])
-
-        # export the all_profiles to csv
-        all_profiles.to_csv(self.output_path)
-
-        return all_profiles
-    
-    def plot_wse_profile(self, 
-                         frac: float = 0.1,
-                         figsize: tuple = (12, 6)
-                         ):
-        """
-        Plot the WSE profiles using seaborn.
-        """
-        wse_profiles = pd.read_csv(self.output_path)
         
-        # plot use matplotlib
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, sharey=True)
-
-        # color list with discrete colormap
-        color_list = plt.cm.get_cmap('tab20', len(wse_profiles['date'].unique()))
-
-        # left: raw wse
-        for i, date in enumerate(wse_profiles['date'].unique()):
-            df_date = wse_profiles[wse_profiles['date'] == date]
-            ax1.scatter(df_date['dist_km'], df_date['wse_raw'], label=date, s=10, alpha=0.2, color=color_list[i])
-            ax1.plot(df_date['dist_km'], df_date[f'wse_smooth_lowess_{frac}_raw'], label=f'Smoothed {date}', linewidth=2, color=color_list[i])
-        ax1.set_xlabel('Distance along river (km)')
-        ax1.set_ylabel('Water Surface Elevation (m)')
-        ax1.set_title(f'Raw WSE Profiles for {self.riv_name}')
-        ax1.legend()
-
-        # right: qc wse
-        for i, date in enumerate(wse_profiles['date'].unique()):
-            df_date = wse_profiles[wse_profiles['date'] == date]
-            ax2.scatter(df_date['dist_km'], df_date['wse_qc'], label=date, s=10, alpha=0.2, color=color_list[i])
-            ax2.plot(df_date['dist_km'], df_date[f'wse_smooth_lowess_{frac}_qc'], label=f'Smoothed {date}', linewidth=2, color=color_list[i])
-
-        ax2.set_xlabel('Distance along river (km)')
-        ax2.set_title(f'QC filtered WSE Profiles for {self.riv_name}')
-        ax2.legend()
-        plt.show()
-        return
+        print(f"Successfully built profiles with {len(all_profiles)} records")
+        
+        # Save to CSV if requested
+        if save_output:
+            try:
+                # Create output directory if it doesn't exist
+                output_dir = os.path.dirname(self.output_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                
+                all_profiles.to_csv(self.output_path, index=False)
+                print(f"Output saved to: {self.output_path}")
+                
+            except Exception as e:
+                print(f"Warning: Failed to save output to {self.output_path}: {e}")
+        
+        return all_profiles
 
         
 

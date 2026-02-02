@@ -8,16 +8,15 @@ This package provides tools to:
 - Apply quality filtering and smoothing
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __author__ = "Xinchen He"
 __email__ = "xinchen134543@gmail.com"
 
 # Import main classes and functions
 from .river import River
 from .pixc import PIXC
-from .profile import Profile, get_median_wse_with_other_vars
+from .profile import Profile
 from .download import download_pixc_data
-from .pipeline import pipeline
 
 # Define what gets imported with "from pixc2profile import *"
 __all__ = [

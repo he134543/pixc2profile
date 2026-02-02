@@ -38,14 +38,19 @@ def download_pixc_data(home_dir: str,
     start_dt = datetime.datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
     temporal_range = (start_dt, end_dt)
+    download_files = []
     for swot_pass_tile in pass_tile_list:
         pixc_results = earthaccess.search_data(short_name = pixc_version, # short name of the product
                                             temporal = temporal_range, # can also specify by time
                                             # bounding_box = tuple(bbox), 
                                             granule_name = f"*_{swot_pass_tile}_*") # Lake
-        # download
-        download_files = earthaccess.download(pixc_results, pixc_dir)
-
+        try:
+            # download
+            downloaded = earthaccess.download(pixc_results, pixc_dir)
+            download_files.extend(downloaded)
+        except Exception as e:
+            print(f"No available PIXC data for {swot_pass_tile}: {e}")
+            continue
     print(f"Downloaded {len(download_files)} PIXC files to {pixc_dir}")
 
     return download_files
