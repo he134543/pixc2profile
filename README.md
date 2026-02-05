@@ -18,17 +18,16 @@ This toolkit is a more detailed and customizable alternative to the official SWO
 
 1. Clone the repository and install the package from source:
 
+Highly recommended to create a virtual environment first, such as `conda`. Here is an example using `conda`:
+
    ```bash
    git clone https://github.com/he134543/pixc2profile.git
    cd pixc2profile
+   conda env create -f environment.yml
+   conda activate pixc2profile
    pip install .
    ```
 
-   Or install in development mode:
-   
-   ```bash
-   pip install -e .
-   ```
 
 ## Quick Start
 

@@ -7,7 +7,9 @@ import numpy as np
 import geopandas as gpd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
-
+from dask import delayed
+from dask.diagnostics import ProgressBar
+from tqdm import tqdm
 from pixc2profile.helper import aggregate_wse_with_other_vars
 from pixc2profile.interpolator import Interpolator
 
@@ -15,6 +17,10 @@ class Profile:
     # Constants
     DEFAULT_CRS = "EPSG:4326"
     DATE_FORMAT_PATTERN = r"\d{8}"
+    
+    # Default column names
+    DEFAULT_WSE_COL = "wse"
+    DEFAULT_DIST_COL = "dist_km"
     
     # Default parameters
     DEFAULT_AGG_FUNCS = ['median', 'mean', 'std', 'count', "q25", "q75"]
@@ -30,6 +36,8 @@ class Profile:
                  buffer_path: str,
                  pixc_csv_paths: List[str],
                  output_path: str,
+                 wse_col: str = None,
+                 dist_col: str = None,
                  ) -> None:
         """
         Initialize the profile class for a specific river.
@@ -41,6 +49,8 @@ class Profile:
             buffer_path: Path to the shapefile containing river buffers.
             pixc_csv_paths: List of paths to pixc observations CSV files.
             output_path: File path to save the final output (csv).
+            wse_col: Name of the water surface elevation column in PIXC data. Defaults to 'wse'.
+            dist_col: Name of the distance column in buffer data. Defaults to 'dist_km'.
             
         Raises:
             FileNotFoundError: If required files don't exist.
@@ -57,6 +67,10 @@ class Profile:
 
         # File paths for PIXC data
         self.pixc_csv_paths = pixc_csv_paths
+
+        # Column names
+        self.wse_col = wse_col if wse_col is not None else self.DEFAULT_WSE_COL
+        self.dist_col = dist_col if dist_col is not None else self.DEFAULT_DIST_COL
 
         # Initialize storage
         self.aval_dates: Optional[List[str]] = None
@@ -122,7 +136,7 @@ class Profile:
             node_buffer_gdf = node_buffer_gdf.to_crs(crs=self.DEFAULT_CRS)
             
             # Validate required columns
-            required_cols = ['node_id', 'dist_km']
+            required_cols = ['node_id', self.dist_col]
             for col in required_cols:
                 if col not in node_buffer_gdf.columns:
                     raise ValueError(f"Required column '{col}' not found in buffer shapefile")
@@ -185,7 +199,6 @@ class Profile:
     
     def agg_wse_per_node(self,
                           date: str,
-                          profile_range: Tuple[float, float] = (0, np.inf),
                           agg_func: List[str] = None,
                           keep_qual_groups: List[str] = None,
                           ) -> pd.DataFrame:
@@ -194,7 +207,6 @@ class Profile:
         
         Args:
             date: Date string in format YYYYMMDD.
-            profile_range: Tuple of (min_km, max_km) to filter the profile.
             agg_func: List of aggregation functions to apply.
             keep_qual_groups: List of quality groups to preserve.
             
@@ -225,23 +237,18 @@ class Profile:
             self.node_buffer_gdf, gdf, predicate='intersects', how="inner"
         )
         
-        # Aggregate WSE by node
-        node_wse = pixc_points_in_buffer.groupby("node_id").apply(
+        # Aggregate WSE by node; keep quality flags associated with the reference stat
+        node_wse = pixc_points_in_buffer.set_index("node_id").groupby(level = "node_id").apply(
             lambda x: aggregate_wse_with_other_vars(
-                x, keep_qual_groups, include_stats=agg_func, reference_stat='median'
+                x, keep_qual_groups, include_stats=agg_func, reference_stat='median', wse_col=self.wse_col, dist_col=self.dist_col
             ), 
-            include_groups=False
         ).reset_index()
+    
         
-        # Fill empty nodes with NaN
-        node_wse = self.node_buffer_gdf.loc[:, ["node_id", "dist_km"]].merge(
-            node_wse, on=["node_id", "dist_km"], how='left'
-        ).reset_index(drop=True).sort_values(by="dist_km")
-        
-        # Filter the profile based on the profile_range
-        node_wse = node_wse[
-            (node_wse.dist_km >= profile_range[0]) & (node_wse.dist_km <= profile_range[1])
-        ]
+        # Re-attach node_id and dist_km to ensure all nodes are present
+        node_wse = self.node_buffer_gdf.loc[:, ["node_id", self.dist_col]].merge(
+            node_wse, on=["node_id", self.dist_col], how='left'
+        ).reset_index(drop=True).sort_values(by=self.dist_col)
         
         # Add date column
         node_wse["date"] = date
@@ -286,7 +293,7 @@ class Profile:
         try:
             result = self.interpolator.interpolate(
                 data=node_wse,
-                x_col='dist_km',
+                x_col=self.dist_col,
                 y_col=var_name,
                 method=method,
                 seg_locations=seg_locations,
@@ -298,26 +305,26 @@ class Profile:
             return node_wse
     
     def build_wse_profiles_over_time(self,
-                                    profile_range: Tuple[float, float] = (0, np.inf),
                                     agg_func: List[str] = None,
                                     smooth_target: str = "wse_median",
                                     keep_qual_groups: List[str] = None,
                                     interpolation_method: str = 'lowess',
                                     seg_locations: List[float] = None,
                                     save_output: bool = True,
+                                    dask_strategy: str = "dask-delay",
                                     **interpolation_params
                                     ) -> pd.DataFrame:
         """
         Build WSE profiles over all available dates.
         
         Args:
-            profile_range: Tuple of (min_km, max_km) to filter the profile.
             agg_func: List of aggregation functions to apply.
             smooth_target: Target variable to smooth (e.g., 'wse_median').
             keep_qual_groups: List of quality groups to preserve.
             interpolation_method: Interpolation method ('lowess', 'gaussian_process', 'moving_average', 'polynomial').
             seg_locations: List of segment locations (in km) for piecewise smoothing.
             save_output: Whether to save the output to CSV file.
+            dask_strategy: Dask strategy for parallel processing ('dask-delay' or 'geopandas').
             **interpolation_params: Method-specific parameters for interpolation.
             
         Returns:
@@ -333,49 +340,47 @@ class Profile:
         if not self.aval_dates:
             raise ValueError("No available dates found. Check PIXC data directories.")
         
-        print(f"Building WSE profiles for {len(self.aval_dates)} dates: {self.aval_dates}")
+        print(f"Building WSE profiles for {len(self.aval_dates)} dates...")
         
-        # Loop over all available dates to build WSE profiles
-        profile_list = []
-        failed_dates = []
+        # Define delayed function for processing a single date
+        def process_single_date(date):
+            # Calculate the WSE profile for this date
+            node_wse = self.agg_wse_per_node(
+                date=date,
+                agg_func=agg_func,
+                keep_qual_groups=keep_qual_groups,
+            )
+            
+            # Smooth the WSE profile
+            node_wse = self.smooth_wse_profile(
+                node_wse=node_wse,
+                var_name=smooth_target,
+                method=interpolation_method,
+                seg_locations=seg_locations,
+                **interpolation_params
+            )
+            
+            return node_wse
         
+        # Create delayed tasks for all dates
+        if dask_strategy == "dask-delay":
+            delayed_tasks = [delayed(process_single_date)(date) for date in self.aval_dates]
+            # Execute all tasks in parallel with progress bar
+            print("Processing dates in parallel using Dask delayed...")
+            with ProgressBar():
+                profile_list = delayed(list)(delayed_tasks).compute()
 
-        for i, date in enumerate(self.aval_dates):
-            try:
-                print(f"Processing date {i+1}/{len(self.aval_dates)}: {date}")
-                
-                # Calculate the WSE profile for this date
-                node_wse = self.agg_wse_per_node(
-                    date=date,
-                    profile_range=profile_range,
-                    agg_func=agg_func,
-                    keep_qual_groups=keep_qual_groups,
-                )
-                
-                # Smooth the WSE profile
-                node_wse = self.smooth_wse_profile(
-                    node_wse=node_wse,
-                    var_name=smooth_target,
-                    method=interpolation_method,
-                    seg_locations=seg_locations,
-                    **interpolation_params
-                )
-                
-                profile_list.append(node_wse)
-                
-            except Exception as e:
-                print(f"Warning: Failed to process date {date}: {e}")
-                failed_dates.append(date)
-                continue
+        else:
+            profile_list = []
+            for date in tqdm(self.aval_dates, desc="Processing dates"):
+                # print(f"Processing date: {date}")
+                profile_df = process_single_date(date)
+                profile_list.append(profile_df)
         
-        if not profile_list:
-            raise ValueError("Failed to process any dates successfully")
-        
-        if failed_dates:
-            print(f"Warning: Failed to process {len(failed_dates)} dates: {failed_dates}")
+        print(f"Successfully processed all {len(profile_list)} dates")
         
         # Concatenate all profiles into one dataframe
-        all_profiles = pd.concat(profile_list, ignore_index=True).sort_values(by=["date", "dist_km"])
+        all_profiles = pd.concat(profile_list, ignore_index=True).sort_values(by=["date", self.dist_col])
         
         print(f"Successfully built profiles with {len(all_profiles)} records")
         

@@ -6,7 +6,9 @@ import numpy as np
 def aggregate_wse_with_other_vars(df_group, 
                                  keep_qual_groups,
                                  include_stats=['median', 'std', 'count', "q25", "q75"],
-                                 reference_stat='median'
+                                 reference_stat='median',
+                                 wse_col='wse',
+                                 dist_col='dist_km'
                                  ):
     """
     Comprehensive aggregate function for WSE per node with multiple statistics.
@@ -32,14 +34,14 @@ def aggregate_wse_with_other_vars(df_group,
     output = {}
     
     # Always include dist_km
-    output['dist_km'] = df_group['dist_km'].iloc[0] if not df_group['dist_km'].empty else np.nan
+    output['dist_km'] = df_group[dist_col].iloc[0] if not df_group[dist_col].empty else np.nan
     
     # if no wse values, return NaN for all statistics
-    if df_group['wse'].isnull().all():
+    if df_group[wse_col].isnull().all():
         
         # Add NaN for all requested statistics
         for stat in include_stats:
-            output[f'wse_{stat}'] = np.nan
+            output[f'{wse_col}_{stat}'] = np.nan
         
         # Add NaN for quality variables
         for qual in keep_qual_groups:
@@ -49,17 +51,17 @@ def aggregate_wse_with_other_vars(df_group,
     
     # Compute additional statistics
     if 'mean' in include_stats:
-        output['wse_mean'] = df_group['wse'].mean()
+        output[f'{wse_col}_mean'] = df_group[wse_col].mean()
     if 'std' in include_stats:
-        output['wse_std'] = df_group['wse'].std()
+        output[f'{wse_col}_std'] = df_group[wse_col].std()
     if 'count' in include_stats:
-        output['wse_count'] = df_group['wse'].count()
+        output[f'{wse_col}_count'] = df_group[wse_col].count()
     if 'min' in include_stats:
-        output['wse_min'] = df_group['wse'].min()
+        output[f'{wse_col}_min'] = df_group[wse_col].min()
     if 'max' in include_stats:
-        output['wse_max'] = df_group['wse'].max()
+        output[f'{wse_col}_max'] = df_group[wse_col].max()
     if 'median' in include_stats:
-        output['wse_median'] = df_group['wse'].median()
+        output[f'{wse_col}_median'] = df_group[wse_col].median()
     if "q" in include_stats:
         # quantiles specified as "q25", "q75", etc.
         for stat in include_stats:
@@ -67,25 +69,25 @@ def aggregate_wse_with_other_vars(df_group,
                 try:
                     # Extract quantile value
                     q_value = int(stat[1:]) / 100.0
-                    output[f'wse_{stat}'] = df_group['wse'].quantile(q_value)
+                    output[f'{wse_col}_{stat}'] = df_group[wse_col].quantile(q_value)
                 except ValueError:
                     continue
     
     # Determine reference value for selecting other variables
     if reference_stat == 'median':
-        reference_value = df_group['wse'].median()
+        reference_value = df_group[wse_col].median()
     elif reference_stat == 'mean':
-        reference_value = df_group['wse'].mean()
+        reference_value = df_group[wse_col].mean()
     elif isinstance(reference_stat, (int, float)) and 0 <= reference_stat <= 1:
-        reference_value = df_group['wse'].quantile(reference_stat)
+        reference_value = df_group[wse_col].quantile(reference_stat)
     else:
         # Default to median if invalid reference_stat
         print(f"Invalid reference_stat {reference_stat}. Defaulting to median.")
-        reference_value = df_group['wse'].median()
+        reference_value = df_group[wse_col].median()
     
     # Find the rows where wse is closest to the reference value
     df_group_copy = df_group.copy()
-    df_group_copy["wse_diff"] = (df_group_copy['wse'] - reference_value).abs()
+    df_group_copy["wse_diff"] = (df_group_copy[wse_col] - reference_value).abs()
     reference_rows = df_group_copy.loc[df_group_copy['wse_diff'] == df_group_copy['wse_diff'].min()]
     
     if not reference_rows.empty:

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import dask_geopandas as dgpd
 import json
 from dask.diagnostics import ProgressBar
+from dask import delayed
 from typing import Optional, List
 
 
@@ -99,11 +100,11 @@ class PIXC:
             
         print(f"Creating reference table from {len(self.pixc_file_paths)} PIXC files")
 
-        # Determine version from the first file path
-        first_file = os.path.basename(self.pixc_file_paths[0])
-        if "SWOT_L2_HR_PIXC_2.0" in first_file or "_PIC0_" in first_file:
+        # Determine version from the first file dir name
+        dir_name = os.path.dirname(self.pixc_file_paths[0])
+        if "SWOT_L2_HR_PIXC_2.0" in dir_name:
             self.version = "C"    
-        elif "SWOT_L2_HR_PIXC_D" in first_file or "_PID0_" in first_file:
+        elif "SWOT_L2_HR_PIXC_D" in dir_name:
             self.version = "D"
         else:
             # Default to version C if cannot determine
@@ -131,6 +132,7 @@ class PIXC:
                            water_frac_threshold: float = 0.2,
                            wse_upper_limit: float = None,
                            channel_mask_path: Optional[str] = None,
+                           dask_strategy: Optional[str] = "dask-geopandas",
                            ) -> List[str]:
         """
         Convert PIXC netCDF files to CSV files containing water points within the buffer area.
@@ -146,6 +148,7 @@ class PIXC:
             water_frac_threshold (float, optional): Minimum water fraction to include a point. Defaults to 0.2.
             wse_upper_limit (float, optional): Upper limit for water surface elevation (WSE) to filter out erroneous data. Defaults to None.
             channel_mask_path (Optional[str], optional): Path to channel mask file for additional filtering. Defaults to None.
+            dask_strategy (Optional[str], optional): Processing strategy. Options: "dask-geopandas" (use Dask GeoDataFrames), "dask-delay" (use Dask delayed for parallel date processing), or "geopandas" (use regular GeoPandas). Defaults to "dask-geopandas".
         
         Returns:
             List[str]: List of paths to the created water CSV files.
@@ -176,23 +179,22 @@ class PIXC:
 
         # reset the water paths list
         self.pixc_water_paths = []
-
-        # process each date separately
-        for aval_date in tqdm(pixc_paths_by_date.keys(), desc="Filtering water pixels within node buffers"):
+        def process_single_date(aval_date,
+                                var_list, 
+                                pixc_paths_this_date,
+                                use_daskgeopandas: bool = False):
             # initialize an empty dataframe to save output
             df = pd.DataFrame([])
-            # get all pixc files for this date
-            pixc_paths_this_date = pixc_paths_by_date[aval_date]
-
+            
             for i in range(len(pixc_paths_this_date)):
                 # load pixc file
                 ds_pixc = xr.open_dataset(pixc_paths_this_date[i], 
-                                      group = "pixel_cloud", 
-                                      chunks = "auto")[self.var_list]
+                                        group = "pixel_cloud", 
+                                        chunks = "auto")[var_list]
                 # filter water pixels
                 ds_pixc = ds_pixc.where(ds_pixc.classification.isin(classification_categories) & 
-                                      (ds_pixc.prior_water_prob >= prior_water_prob_threshold) & 
-                                      (ds_pixc.water_frac >= water_frac_threshold))
+                                        (ds_pixc.prior_water_prob >= prior_water_prob_threshold) & 
+                                        (ds_pixc.water_frac >= water_frac_threshold))
 
                 # calculate water surface elevation (WSE)
                 ds_pixc["wse"] = ds_pixc.height \
@@ -218,8 +220,8 @@ class PIXC:
                                 geometry = gpd.points_from_xy(df.longitude,
                                                                 df.latitude),
                                 crs = "EPSG:4326")
-            df = dgpd.from_geopandas(df, npartitions=n_parts)  # Convert to Dask GeoDataFrame for parallel processing
-
+            if use_daskgeopandas:
+                df = dgpd.from_geopandas(df, npartitions=n_parts)
             # only select points within the node buffer
             df = df.loc[df.geometry.intersects(nodes_buffer_gdf.union_all())]
             # only select points within the channel mask if provided
@@ -227,10 +229,41 @@ class PIXC:
                 channel_mask_gdf = gpd.read_file(channel_mask_path).to_crs(df.crs)
                 df = df.loc[df.geometry.intersects(channel_mask_gdf.union_all())]
 
-            # compute and export to csv
+            # export to csv
             pixc_water_path = os.path.join(water_dir, f"{aval_date}_water.csv")
-            df.compute().to_csv(pixc_water_path, index = None)
-            self.pixc_water_paths.append(pixc_water_path)
+
+            if use_daskgeopandas:
+                df.compute().to_csv(pixc_water_path, index = None)
+            else:
+                df.to_csv(pixc_water_path, index = None)
+            return pixc_water_path
+        
+        if dask_strategy == "dask-delay":
+            # Define function for processing a single date
+            # Create delayed tasks for all dates
+            
+            # Compute all delayed tasks with progress bar
+            try:
+                delayed_tasks = []
+                for aval_date in pixc_paths_by_date.keys():
+                    pixc_paths_this_date = pixc_paths_by_date[aval_date]
+                    delayed_tasks.append(delayed(process_single_date)(aval_date, self.var_list, pixc_paths_this_date, use_daskgeopandas=False))
+                print("Processing dates in parallel using Dask delayed...")
+                with ProgressBar():
+                    self.pixc_water_paths = delayed(list)(delayed_tasks).compute()
+            except Exception as e:
+                print(f"Error during Dask delayed computation: {e}")
+                print("Falling back to dask-geopandas...")
+                dask_strategy = "dask-geopandas"
+                raise e
+            
+        if dask_strategy in ["dask-geopandas", "geopandas"]:
+            # Process each date separately (for both dask-geopandas and None strategies)
+            for aval_date in tqdm(pixc_paths_by_date.keys(), desc="Filtering water pixels within node buffers"):
+                pixc_paths_this_date = pixc_paths_by_date[aval_date]
+                use_daskgeopandas = (dask_strategy == "dask-geopandas")
+                pixc_water_path = process_single_date(aval_date, self.var_list, pixc_paths_this_date, use_daskgeopandas=use_daskgeopandas)
+                self.pixc_water_paths.append(pixc_water_path)
 
         return self.pixc_water_paths
 
@@ -264,8 +297,10 @@ class PIXC:
             # load pixc water csv, make sure wse and classification are float64, quality flags are int
             dtypes = {"wse": np.float64, 
                       "classification": np.float64}
+            # set quality flag dtypes to int64
             for flag in quality_flag_dict.keys():
                 dtypes[flag] = np.int64
+            # read csv of pixc after filtering non-water pixels
             df = pd.read_csv(pixc_water_path, dtype=dtypes).dropna(subset=["wse"])
             # apply quality flag filters, remove values that are within provided value list
             for flag, values in quality_flag_dict.items():
