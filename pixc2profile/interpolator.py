@@ -69,13 +69,13 @@ class Interpolator:
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
         
-        # Remove rows with NaN in either x or y columns
-        clean_data = data.dropna(subset=[x_col, y_col])
+        # # Remove rows with NaN in either x or y columns
+        # clean_data = data.dropna(subset=[x_col, y_col])
         
-        if len(clean_data) < 3:
-            raise ValueError(f"Insufficient data points. Need at least 3, got {len(clean_data)}")
+        if len(data) < 3:
+            raise ValueError(f"Insufficient data points. Need at least 3, got {len(data)}")
         
-        return clean_data.sort_values(x_col)
+        return data.sort_values(x_col)
 
     def _segment_data_by_location(self, data: pd.DataFrame, x_col: str, 
                                  seg_locations: List[float]) -> List[pd.DataFrame]:

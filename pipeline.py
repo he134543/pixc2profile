@@ -16,13 +16,13 @@ skip_steps = [
             # "step_1", 
             #  "step_2", 
             #  "step_3", 
-              # "step_4"
+            #  "step_4"
               ]  # specify which steps to skip for testing
 
 
 # Take Selingue as an example
 # File path settings
-home_dir = "/mnt/d/pixc2profile/examples/data/shps/test_river.shp"
+home_dir = "/mnt/d/pixc2profile/examples/data"
 river_name = "test_river"
 river_shp_path = os.path.join(home_dir, river_name, "reach", "river.shp")
 # Output paths for profiles: wse_water (only perform water pixel filtering) and wse_water_qc (perform both water pixel filtering and quality flag filtering)
@@ -30,8 +30,9 @@ wse_water_path=os.path.join(home_dir, river_name, "wse_profile_water.csv")
 wse_water_qc_path=os.path.join(home_dir, river_name, "wse_profile_water_qc.csv")
 
 # Data parameters
-start_date = "2023-01-01"
-end_date = "2026-01-31"
+start_date = "2025-08-01"
+end_date = "2025-08-30"
+# Assign SWOT pass and tile that cover the river reach
 pass_tile_list = ["454_082L", "454_083L", "191_227L", "191_227R", "191_226R"]
 pixc_version = "SWOT_L2_HR_PIXC_D"
 login_strategy = 'netrc'
