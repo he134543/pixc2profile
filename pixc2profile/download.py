@@ -3,6 +3,7 @@ import pandas as pd
 import earthaccess
 import os
 import datetime
+import xarray as xr
 
 def download_pixc_data(home_dir: str, 
                        riv_name: str,
@@ -11,6 +12,7 @@ def download_pixc_data(home_dir: str,
                        pass_tile_list: list,
                        pixc_version: str = "SWOT_L2_HR_PIXC_2.0",
                        login_strategy: str = 'netrc',
+                       check_file_integrity: bool = True
                        ):
     """
     Downloads PIXC2.0 data from Earthdata for a specified river and date range.
@@ -39,11 +41,15 @@ def download_pixc_data(home_dir: str,
     end_dt = datetime.datetime.strptime(end_date, '%Y-%m-%d')
     temporal_range = (start_dt, end_dt)
     download_files = []
+    download_links = []
     for swot_pass_tile in pass_tile_list:
         pixc_results = earthaccess.search_data(short_name = pixc_version, # short name of the product
                                             temporal = temporal_range, # can also specify by time
                                             # bounding_box = tuple(bbox), 
                                             granule_name = f"*_{swot_pass_tile}_*") # Lake
+        print(f"Found {len(pixc_results)} PIXC files for {swot_pass_tile} between {start_date} and {end_date}")
+        print(f"Downloading PIXC files for {swot_pass_tile}...")
+        download_links.extend(pixc_results)
         try:
             # download
             downloaded = earthaccess.download(pixc_results, pixc_dir)
@@ -51,6 +57,28 @@ def download_pixc_data(home_dir: str,
         except Exception as e:
             print(f"No available PIXC data for {swot_pass_tile}: {e}")
             continue
-    print(f"Downloaded {len(download_files)} PIXC files to {pixc_dir}")
+    # create a dict to store the mapping of files and their corresponding results
+    file_result_mapping = {file: result for file, result in zip(download_files, download_links)}
+    # check file integrity
+    if check_file_integrity:
+        print("Checking file integrity...")
+        for file in download_files:
+            try:
+                # open the file with xarray to check if it's valid
+                ds = xr.open_dataset(file)
+                ds.close()
+            except Exception as e:
+                print(f"File {file} is corrupted or incomplete")
+                # remove the corrupted file
+                os.remove(file)
+                download_files.remove(file)
+                print(f"Redownloading {file}...")
+                # redownload the file
+                try:
+                    redownloaded = earthaccess.download([file_result_mapping[file]], pixc_dir)
+                    download_files.extend(redownloaded)
+                except Exception as e:
+                    print(f"Failed to redownload {file}: {e}")
+                    continue
 
     return download_files
