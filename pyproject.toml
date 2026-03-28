@@ -4,34 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pixc2profile"
-version = "0.4.0"
+version = "0.5.0"
 authors = [
     {name = "Xinchen He", email = "xinchen134543@gmail.com"},
 ]
 description = "A Python package for extracting along-river water surface elevation (WSE) profiles directly from SWOT Pixel Cloud (PixC) data"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "pandas",
-    "earthaccess",
-    "xarray",
-    "scikit-learn",
-    "geopandas",
-    "tqdm",
-    "matplotlib",
-    "seaborn",
-    "dask-geopandas",
-    "statsmodels",
-    "shapely",
-    "contextily",
+    "numpy>=2.4.3",
+    "pandas>=3.0.1",
+    "earthaccess>=0.16.0",
+    "xarray>=2023.6.0",
+    "scikit-learn>=1.5.1",
+    "geopandas>=1.1.2",
+    "tqdm>=4.66.5",
+    "matplotlib>=3.9.2",
+    "seaborn>=0.13.2",
+    "dask-geopandas>=0.5.0",
+    "statsmodels>=0.14.2",
+    "shapely>=2.1.2",
+    "contextily>=1.7.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
 ]
 

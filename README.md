@@ -21,11 +21,9 @@ This toolkit is a more detailed and customizable alternative to the official SWO
 Highly recommended to create a virtual environment first, such as `conda`. Here is an example using `conda`:
 
    ```bash
-   git clone https://github.com/he134543/pixc2profile.git
-   cd pixc2profile
    conda env create -f environment.yml
    conda activate pixc2profile
-   pip install .
+   pip install git+https://github.com/he134543/pixc2profile.git
    ```
 
 

@@ -2,7 +2,7 @@
 
 import pandas as pd
 import numpy as np
-
+import geopandas as gpd
 def aggregate_wse_with_other_vars(df_group, 
                                  keep_qual_groups,
                                  include_stats=['median', 'std', 'count', "q25", "q75"],
@@ -101,3 +101,28 @@ def aggregate_wse_with_other_vars(df_group,
             output[qual] = np.nan
     
     return pd.Series(output)
+
+# wrap into a function
+def find_swot_tiles_for_study_reaches(reaches_gdf, 
+                                      swot_tile_gdf, 
+                                      coverage_threshold=0.75):
+    """
+    Function to find SWOT tiles that cover the study reaches with a certain coverage threshold.
+    Parameters:
+    - reaches_gdf: GeoDataFrame of the study reaches.
+    - swot_tile_gdf: GeoDataFrame of the SWOT tiles.
+    - coverage_threshold: Minimum coverage percentage (0-1) required to select a tile.
+    Returns:
+    - List of selected tile IDs that meet the coverage threshold.
+    """
+    reaches_gdf = reaches_gdf.to_crs(swot_tile_gdf.crs)
+    intersect_gdf = gpd.overlay(reaches_gdf, swot_tile_gdf, how="intersection")
+    intersect_gdf["Pass"] = intersect_gdf.TILE_ID.apply(lambda x: x.split("_")[0])
+    utm_crs = reaches_gdf.estimate_utm_crs()
+    intersect_gdf["coverage"] = intersect_gdf.to_crs(utm_crs).geometry.length / reaches_gdf.to_crs(utm_crs).geometry.length.sum()
+    pass_coverage = intersect_gdf.groupby("Pass")["coverage"].sum().reset_index()
+    selected_passes = pass_coverage.loc[pass_coverage.coverage >= coverage_threshold, "Pass"].tolist()
+    print("Selected Passes:", selected_passes, "with coverage:", pass_coverage.loc[pass_coverage.coverage >= coverage_threshold, "coverage"].tolist())
+    selected_tiles = intersect_gdf.loc[intersect_gdf.Pass.isin(selected_passes), "TILE_ID"].unique().tolist()
+    print("Selected Tiles:", selected_tiles)
+    return selected_tiles

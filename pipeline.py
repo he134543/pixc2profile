@@ -10,6 +10,7 @@ from pixc2profile import download_pixc_data
 from pixc2profile.river import River
 from pixc2profile.pixc import PIXC
 from pixc2profile.profile import Profile
+from pixc2profile.helper import find_swot_tiles_for_study_reaches
 
 
 skip_steps = [
@@ -33,10 +34,15 @@ wse_water_qc_path=os.path.join(home_dir, river_name, "wse_profile_water_qc.csv")
 start_date = "2025-08-01"
 end_date = "2025-08-30"
 # Assign SWOT pass and tile that cover the river reach
-pass_tile_list = ["454_082L", "454_083L", "191_227L", "191_227R", "191_226R"]
+# pass_tile_list = ["454_082L", "454_083L", "191_227L", "191_227R", "191_226R"]
+swot_tile_gdf = gpd.read_feather(os.path.join(home_dir, "shps", "swot_science_coverage_tiles.feather"))
+river_gdf = gpd.read_file(river_shp_path)
+# For each swot pass, if the coverage of the river reach is larger than this threshold, the pass will be downloaded for analysis.
+pass_coverage_threshold = 0.75 
+pass_tile_list = find_swot_tiles_for_study_reaches(river_gdf, swot_tile_gdf, pass_coverage_threshold)
+
 pixc_version = "SWOT_L2_HR_PIXC_D"
 login_strategy = 'netrc'
-
 
 # Node and buffer parameters
 node_spacing = 50 # m
