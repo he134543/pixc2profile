@@ -26,5 +26,4 @@ __all__ = [
     "download_pixc_data",
     "filter_with_quality_flags",
     "get_median_wse_with_other_vars",
-    "pipeline"
 ]

@@ -283,12 +283,6 @@ class Profile:
         if seg_locations is None:
             seg_locations = []
         
-        # Set default parameters based on method
-        if method == 'lowess' and 'frac_list' not in method_params:
-            method_params['frac_list'] = self.DEFAULT_FRAC_LIST
-        if method == 'lowess' and 'it' not in method_params:
-            method_params['it'] = self.DEFAULT_LOWESS_ITERATIONS
-        
         # Use the interpolator to smooth the profile
         try:
             result = self.interpolator.interpolate(

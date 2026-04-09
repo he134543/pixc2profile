@@ -18,6 +18,7 @@ from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, M
 # Default parameters for different methods
 DEFAULT_LOWESS_PARAMS = {
     'frac_list': [0.01, 0.05, 0.1, 0.2],
+    'window_size_km_list': [1, 5, 10, 15, 20], # 1km, 5km, 10km, 15km, 20km
     'it': 3,
     'delta': 0.0,
     'return_sorted': False
@@ -77,10 +78,12 @@ class Interpolator:
         
         return data.sort_values(x_col)
 
-    def _segment_data_by_location(self, data: pd.DataFrame, x_col: str, 
+    def _segment_data_by_location(self, 
+                                  data: pd.DataFrame, 
+                                  x_col: str, 
                                  seg_locations: List[float]) -> List[pd.DataFrame]:
         """
-        Segment data based on location breakpoints.
+        Segment data based on location breakpoints. This allows for piecewise interpolation/smoothing when obstructions were found in the inflow river.
         
         Args:
             data: Input DataFrame
@@ -148,19 +151,21 @@ class Interpolator:
         return f_std
 
     def smooth_lowess(self, data: pd.DataFrame, x_col: str, y_col: str,
-                     frac_list: Optional[List[float]] = None,
-                     it: int = None,
-                     seg_locations: Optional[List[float]] = None,
-                     x_eval: Optional[np.ndarray] = None,
-                     **kwargs) -> pd.DataFrame:
+                    frac_list: Optional[List[float]] = None,
+                    window_size_km_list: Optional[List[float]] = None,
+                    it: int = None,
+                    seg_locations: Optional[List[float]] = None,
+                    x_eval: Optional[np.ndarray] = None,
+                    **kwargs) -> pd.DataFrame:
         """
-        Apply LOWESS smoothing to the data.
+        Apply LOWESS smoothing to the data using either fractions or window sizes.
         
         Args:
             data: Input DataFrame
             x_col: Name of x-coordinate column  
             y_col: Name of y-coordinate column
-            frac_list: List of fractions for LOWESS smoothing
+            frac_list: List of fractions for LOWESS smoothing (0 < frac <= 1)
+            window_size_km_list: List of window sizes in same units as x_col for LOWESS smoothing
             it: Number of robustifying iterations
             seg_locations: List of segment locations for piecewise smoothing
             x_eval: Optional array of x values for evaluation (default: use original x values)
@@ -168,18 +173,38 @@ class Interpolator:
             
         Returns:
             DataFrame with smoothed values added as new columns
+            
+        Note:
+            Specify either frac_list OR window_size_km_list, not both.
+            If neither is provided, defaults to frac_list from DEFAULT_LOWESS_PARAMS.
         """
-        # Set defaults
-        if frac_list is None:
+        # Determine which mode to use
+        if frac_list is not None and window_size_km_list is not None:
+            raise ValueError("Cannot specify both frac_list and window_size_km_list. Choose one.")
+        
+        # Set defaults and determine mode
+        if frac_list is None and window_size_km_list is None:
             frac_list = DEFAULT_LOWESS_PARAMS['frac_list']
+            use_window_mode = False
+        elif frac_list is not None:
+            use_window_mode = False
+        else:  # window_size_km_list is not None
+            use_window_mode = True
+        
         if it is None:
             it = DEFAULT_LOWESS_PARAMS['it']
         if seg_locations is None:
             seg_locations = []
         
-        # Validate fractions
-        if not all(isinstance(f, (int, float)) and 0 < f <= 1 for f in frac_list):
-            raise ValueError("All fractions must be numeric values between 0 and 1")
+        # Validate parameters based on mode
+        if use_window_mode:
+            if not all(isinstance(f, (int, float)) and f > 0 for f in window_size_km_list):
+                raise ValueError("All window sizes must be numeric values greater than 0")
+            param_list = window_size_km_list
+        else:
+            if not all(isinstance(f, (int, float)) and 0 < f <= 1 for f in frac_list):
+                raise ValueError("All fractions must be numeric values between 0 and 1")
+            param_list = frac_list
         
         # Validate and clean data
         clean_data = self._validate_input_data(data, x_col, y_col)
@@ -189,14 +214,18 @@ class Interpolator:
         
         # Apply LOWESS to each segment
         result_segments = []
-        
+
         for i, segment in enumerate(segments):
             segment_result = segment.copy()
             
             if len(segment) < 3:
                 # Fill with NaN for insufficient data
-                for frac in frac_list:
-                    segment_result[f"{y_col}_lowess_{frac}"] = np.nan
+                for param in param_list:
+                    if use_window_mode:
+                        col_name = f"{y_col}_lowess_{param}km"
+                    else:
+                        col_name = f"{y_col}_lowess_{param}"
+                    segment_result[col_name] = np.nan
                 result_segments.append(segment_result)
                 continue
             
@@ -205,8 +234,18 @@ class Interpolator:
             y_data = segment[y_col].values
             x_eval_segment = x_eval if x_eval is not None else x_data
             
-            for frac in frac_list:
+            for param in param_list:
                 try:
+                    if use_window_mode:
+                        # Calculate fraction for LOWESS based on window size
+                        x_range = np.max(x_data) - np.min(x_data)
+                        frac = param / x_range if x_range > 0 else 1.0
+                        frac = min(frac, 1.0)  # Ensure fraction does not exceed 1
+                        col_name = f"{y_col}_lowess_{param}km"
+                    else:
+                        frac = param
+                        col_name = f"{y_col}_lowess_{param}"
+                    
                     smoothed = sm.nonparametric.lowess(
                         endog=y_data,
                         exog=x_data,
@@ -216,10 +255,15 @@ class Interpolator:
                         return_sorted=False,
                         **kwargs
                     )
-                    segment_result[f"{y_col}_lowess_{frac}"] = smoothed
+                    segment_result[col_name] = smoothed
+                    
                 except Exception as e:
-                    segment_result[f"{y_col}_lowess_{frac}"] = np.nan
-                    warnings.warn(f"LOWESS smoothing failed for segment {i}, frac={frac}: {e}")
+                    if use_window_mode:
+                        col_name = f"{y_col}_lowess_{param}km"
+                    else:
+                        col_name = f"{y_col}_lowess_{param}"
+                    segment_result[col_name] = np.nan
+                    warnings.warn(f"LOWESS smoothing failed for segment {i}, param={param}: {e}")
             
             result_segments.append(segment_result)
         
