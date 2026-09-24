@@ -1,0 +1,13 @@
+numpy>=2.4.3
+pandas>=3.0.1
+earthaccess>=0.16.0
+xarray>=2023.6.0
+scikit-learn>=1.5.1
+geopandas>=1.1.2
+tqdm>=4.66.5
+matplotlib>=3.9.2
+seaborn>=0.13.2
+dask-geopandas>=0.5.0
+statsmodels>=0.14.2
+shapely>=2.1.2
+contextily>=1.7.0

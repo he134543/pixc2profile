@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: pixc2profile
+Version: 0.5.0
+Summary: A Python package for extracting along-river water surface elevation (WSE) profiles directly from SWOT Pixel Cloud (PixC) data
+Author-email: Xinchen He <xinchen134543@gmail.com>
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Programming Language :: Python :: 3.10
+Requires-Python: >=3.10
+Requires-Dist: numpy>=2.4.3
+Requires-Dist: pandas>=3.0.1
+Requires-Dist: earthaccess>=0.16.0
+Requires-Dist: xarray>=2023.6.0
+Requires-Dist: scikit-learn>=1.5.1
+Requires-Dist: geopandas>=1.1.2
+Requires-Dist: tqdm>=4.66.5
+Requires-Dist: matplotlib>=3.9.2
+Requires-Dist: seaborn>=0.13.2
+Requires-Dist: dask-geopandas>=0.5.0
+Requires-Dist: statsmodels>=0.14.2
+Requires-Dist: shapely>=2.1.2
+Requires-Dist: contextily>=1.7.0
