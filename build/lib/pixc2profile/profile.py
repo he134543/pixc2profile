@@ -240,6 +240,12 @@ class Profile:
         # Load PIXC data for the date
         gdf = self._load_pixc_data_for_date(date)
         
+        # Apply WSE upper and lower limits if specified
+        if self.wse_upper_limit is not None:
+            gdf = gdf.loc[gdf[self.wse_col] <= self.wse_upper_limit].reset_index(drop=True)
+        if self.wse_lower_limit is not None:
+            gdf = gdf.loc[gdf[self.wse_col] >= self.wse_lower_limit].reset_index(drop=True)
+
         # Find intersected PIXC points with reach node buffer
         pixc_points_in_buffer = gpd.sjoin(
             self.node_buffer_gdf, gdf, predicate='intersects', how="inner"
@@ -260,12 +266,6 @@ class Profile:
         
         # Add date column
         node_wse["date"] = date
-
-        # Apply WSE upper and lower limits if specified
-        if self.wse_upper_limit is not None:
-            node_wse = node_wse.loc[node_wse[self.wse_col] <= self.wse_upper_limit].reset_index(drop=True)
-        if self.wse_lower_limit is not None:
-            node_wse = node_wse.loc[node_wse[self.wse_col] >= self.wse_lower_limit].reset_index(drop=True)
         
         return node_wse
     
